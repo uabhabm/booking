@@ -129,9 +129,8 @@
 
 	{#if !data.configured}
 		<p class="banner warn">
-			MySQL är inte konfigurerat — sätt <code>DATABASE_URL</code> (eller <code>MYSQL_HOST</code>,
-			<code>MYSQL_USER</code>, <code>MYSQL_DATABASE</code>) i <code>.env</code> och kör
-			<code>schema.sql</code>.
+			MongoDB är inte konfigurerat — sätt <code>MONGODB_URI</code> i <code>.env</code> och skapa
+			collections enligt <code>schema.mongodb.md</code>.
 		</p>
 		<p class="actions"><a class="btn secondary" href={calendarHref()}>Tillbaka till kalendern</a></p>
 	{:else if data.unavailable}

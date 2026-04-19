@@ -29,11 +29,11 @@ npm run dev
 npm run dev -- --open
 ```
 
-The app uses **MySQL** for bookable objects and slot bookings. Without connection settings the UI shows a warning and cannot read/write data.
+The app uses **MongoDB** (e.g. Atlas) for bookable objects and slot bookings. Without connection settings the UI shows a warning and cannot read/write data.
 
 1. Copy the env template: `cp .env.example .env` (on Windows: `copy .env.example .env`).
-2. Create a database and apply `schema.sql` (see file header for a `mysql` CLI example). For older databases: run `schema-migration-booking-details.sql` if guest columns are missing, `schema-migration-prices.sql` if `booking_price` columns are missing, `schema-migration-total-to-pay-label.sql` if `total_to_pay_label` is missing, and `schema-migration-swish-payment-request.sql` if `swish_payment_request_uuid` is missing.
-3. Set **`DATABASE_URL`** (`mysql://user:password@host:3306/dbname`) **or** `MYSQL_HOST`, `MYSQL_USER`, and `MYSQL_DATABASE` (optional `MYSQL_PORT`, `MYSQL_PASSWORD`) in a **`.env` file at the project root**, then restart the dev server. (The app reads these through SvelteKit’s private env API, not raw `process.env`, so a root `.env` is required for local dev.)
+2. In Atlas, allow your IP under **Network Access**, then set **`MONGODB_URI`** in **`.env`**. Prefer the **`mongodb+srv://...`** string from **Connect → Drivers** (not the multi-host `mongodb://` list), which avoids common TLS errors on Windows. Replace the password; URL-encode special characters in the password. Optional **`MONGODB_DB`** defaults to `booking`. Seed collections as in **`schema.mongodb.md`**.
+3. Restart the dev server after changing `.env`.
 
 **URLs:** `/` lists all bookable objects; the calendar for one object is at `/<objectId>` (the `bookable_objects.id` value). Optional query `?vecka=YYYY-MM-DD` picks the week (Monday of that week). Choosing a free slot opens `/<objectId>/book?date=YYYY-MM-DD&hour=H&vecka=…` to enter guest details before confirming. Old links using `/?objectId=…` are redirected to `/<objectId>`.
 

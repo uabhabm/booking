@@ -1,8 +1,28 @@
-import type { RowDataPacket } from 'mysql2';
 import { isoWeekNumber, isoWeekYear, weekDayDates } from '$lib/calendar';
-import { getPool } from './db';
+import { getDb } from './db';
 
-/** Fallback when `bookable_objects.total_to_pay_label` is missing or blank. */
+type BookableObjectDoc = {
+	_id: string;
+	name: string;
+	booking_price?: unknown;
+	total_to_pay_label?: string | null;
+};
+
+type BookingDocument = {
+	_id: string;
+	object_id: string;
+	date: string;
+	hour: number;
+	guest_name: string;
+	guest_email: string;
+	guest_phone: string;
+	label: string;
+	booking_price: number;
+	swish_payment_request_uuid: string | null;
+	created_at?: Date;
+};
+
+/** Fallback when `total_to_pay_label` is missing or blank. */
 export const DEFAULT_TOTAL_TO_PAY_LABEL = 'Totalt att betala:';
 
 export const FIRST_HOUR = 8;
@@ -37,69 +57,49 @@ export function slotRowId(objectId: string, date: string, hour: number): string 
 	return `${objectId}_${date}_${hour}`;
 }
 
-export async function isSlotBooked(objectId: string, date: string, hour: number): Promise<boolean> {
-	const pool = getPool();
-	if (!pool) return true;
-	const id = slotRowId(objectId, date, hour);
-	const [rows] = await pool.query<RowDataPacket[]>(
-		'SELECT 1 AS ok FROM bookings WHERE id = ? LIMIT 1',
-		[id]
-	);
-	return (rows as { ok: number }[]).length > 0;
-}
-
 function isDuplicateKey(e: unknown): boolean {
-	const err = e as { code?: string; errno?: number };
-	return err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062;
+	const code = (e as { code?: number })?.code;
+	return code === 11000;
 }
 
-function rowToBookableObject(r: {
-	id: string;
-	name: string;
-	booking_price?: unknown;
-	total_to_pay_label?: string | null;
-}): BookableObject {
-	const raw = r.booking_price;
+function docToBookableObject(d: BookableObjectDoc): BookableObject {
+	const raw = d.booking_price;
 	const n = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? '0'));
-	const label = String(r.total_to_pay_label ?? '').trim();
+	const label = String(d.total_to_pay_label ?? '').trim();
 	return {
-		id: r.id,
-		name: String(r.name ?? r.id),
+		id: d._id,
+		name: String(d.name ?? d._id),
 		bookingPrice: Number.isFinite(n) ? n : 0,
 		totalToPayLabel: label || DEFAULT_TOTAL_TO_PAY_LABEL
 	};
 }
 
+export async function isSlotBooked(objectId: string, date: string, hour: number): Promise<boolean> {
+	const db = await getDb();
+	if (!db) return true;
+	const id = slotRowId(objectId, date, hour);
+	const n = await db
+		.collection<BookingDocument>('bookings')
+		.countDocuments({ _id: id }, { limit: 1 });
+	return n > 0;
+}
+
 export async function getBookableObject(id: string): Promise<BookableObject | null> {
-	const pool = getPool();
-	if (!pool) return null;
-	const [rows] = await pool.query<RowDataPacket[]>(
-		'SELECT id, name, booking_price, total_to_pay_label FROM bookable_objects WHERE id = ? LIMIT 1',
-		[id]
-	);
-	const list = rows as {
-		id: string;
-		name: string;
-		booking_price?: unknown;
-		total_to_pay_label?: string | null;
-	}[];
-	return list[0] ? rowToBookableObject(list[0]) : null;
+	const db = await getDb();
+	if (!db) return null;
+	const doc = await db.collection<BookableObjectDoc>('bookable_objects').findOne({ _id: id });
+	return doc ? docToBookableObject(doc) : null;
 }
 
 export async function listBookableObjects(): Promise<BookableObject[]> {
-	const pool = getPool();
-	if (!pool) return [];
-	const [rows] = await pool.query<RowDataPacket[]>(
-		'SELECT id, name, booking_price, total_to_pay_label FROM bookable_objects ORDER BY name ASC'
-	);
-	return (
-		rows as {
-			id: string;
-			name: string;
-			booking_price?: unknown;
-			total_to_pay_label?: string | null;
-		}[]
-	).map(rowToBookableObject);
+	const db = await getDb();
+	if (!db) return [];
+	const cursor = db
+		.collection<BookableObjectDoc>('bookable_objects')
+		.find({})
+		.sort({ name: 1 });
+	const docs = await cursor.toArray();
+	return docs.map(docToBookableObject);
 }
 
 export async function loadBookingPage(params: {
@@ -108,11 +108,11 @@ export async function loadBookingPage(params: {
 	/** `exact`: unknown id does not fall back to the first object (for `/[objectId]` routes). */
 	objectSelection?: 'default' | 'exact';
 }): Promise<PageLoadResult> {
-	const pool = getPool();
 	const monday = params.weekStart;
 	const dayDates = weekDayDates(monday);
 
-	if (!pool) {
+	const db = await getDb();
+	if (!db) {
 		return {
 			configured: false,
 			objects: [],
@@ -138,13 +138,17 @@ export async function loadBookingPage(params: {
 		if (selectedObjectId) {
 			const weekStart = dayDates[0]!;
 			const weekEnd = dayDates[6]!;
-			const [rows] = await pool.query<RowDataPacket[]>(
-				'SELECT `date`, hour FROM bookings WHERE object_id = ? AND `date` >= ? AND `date` <= ?',
-				[selectedObjectId, weekStart, weekEnd]
-			);
-			bookedSlotKeys = (rows as { date: string; hour: number }[]).map(
-				(r) => `${r.date}_${Number(r.hour)}`
-			);
+			const rows = await db
+				.collection<Pick<BookingDocument, 'date' | 'hour'>>('bookings')
+				.find(
+					{
+						object_id: selectedObjectId,
+						date: { $gte: weekStart, $lte: weekEnd }
+					},
+					{ projection: { date: 1, hour: 1 } }
+				)
+				.toArray();
+			bookedSlotKeys = rows.map((r) => `${r.date}_${Number(r.hour)}`);
 		}
 
 		return {
@@ -180,13 +184,13 @@ export async function createSlotBooking(input: {
 	guestEmail: string;
 	guestPhone: string;
 	label: string;
-	/** Snapshot from `bookable_objects.booking_price` at booking time (SEK). */
+	/** Snapshot of object price at booking time (SEK). */
 	bookingPrice: number;
 	/** MSS payment request token/UUID after HTTP 201 (paid bookings only). */
 	swishPaymentRequestUuid?: string | null;
 }): Promise<{ ok: true } | { ok: false; message: string }> {
-	const pool = getPool();
-	if (!pool) return { ok: false, message: 'Databasen är inte konfigurerad.' };
+	const db = await getDb();
+	if (!db) return { ok: false, message: 'Databasen är inte konfigurerad.' };
 
 	const hour = Number(input.hour);
 	if (!Number.isInteger(hour) || hour < FIRST_HOUR || hour > LAST_START_HOUR) {
@@ -204,21 +208,19 @@ export async function createSlotBooking(input: {
 			? input.swishPaymentRequestUuid.trim().slice(0, 64)
 			: null;
 	try {
-		await pool.execute(
-			'INSERT INTO bookings (id, object_id, `date`, hour, guest_name, guest_email, guest_phone, label, booking_price, swish_payment_request_uuid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-			[
-				id,
-				input.objectId,
-				input.date,
-				hour,
-				input.guestName,
-				input.guestEmail,
-				input.guestPhone,
-				input.label,
-				bookingPrice,
-				swishUuid
-			]
-		);
+		await db.collection<BookingDocument>('bookings').insertOne({
+			_id: id,
+			object_id: input.objectId,
+			date: input.date,
+			hour,
+			guest_name: input.guestName,
+			guest_email: input.guestEmail,
+			guest_phone: input.guestPhone,
+			label: input.label,
+			booking_price: bookingPrice,
+			swish_payment_request_uuid: swishUuid,
+			created_at: new Date()
+		});
 		return { ok: true };
 	} catch (e: unknown) {
 		if (isDuplicateKey(e)) {

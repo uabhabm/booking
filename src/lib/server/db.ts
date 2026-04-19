@@ -1,7 +1,9 @@
 import { env } from '$env/dynamic/private';
-import mysql from 'mysql2/promise';
+import { MongoClient, type Db } from 'mongodb';
 
-let pool: mysql.Pool | undefined;
+let client: MongoClient | undefined;
+let dbInstance: Db | undefined;
+let connecting: Promise<Db | null> | null = null;
 
 /** Read private env (incl. `.env` in dev) — raw `process.env` is not populated for app code. */
 function readEnv(key: string): string | undefined {
@@ -10,45 +12,53 @@ function readEnv(key: string): string | undefined {
 }
 
 export function isDatabaseConfigured(): boolean {
-	if (readEnv('DATABASE_URL')) return true;
-	return Boolean(
-		readEnv('MYSQL_HOST') && readEnv('MYSQL_USER') && readEnv('MYSQL_DATABASE')
-	);
+	return Boolean(readEnv('MONGODB_URI'));
 }
 
-function poolOptions(): mysql.PoolOptions {
-	const url = readEnv('DATABASE_URL');
-	if (url) {
-		const u = new URL(url);
-		if (u.protocol !== 'mysql:' && u.protocol !== 'mysqls:') {
-			throw new Error('DATABASE_URL must use mysql:// or mysqls://');
-		}
-		const database = decodeURIComponent(u.pathname.replace(/^\//, '').split('?')[0] ?? '');
-		return {
-			host: u.hostname,
-			port: u.port ? Number(u.port) : 3306,
-			user: decodeURIComponent(u.username),
-			password: decodeURIComponent(u.password),
-			database,
-			waitForConnections: true,
-			connectionLimit: 10,
-			dateStrings: true
-		};
+/** Atlas multi-host `mongodb://...@shard-00-00...:27017,...` URIs often fail TLS on Windows; use `mongodb+srv://` from Atlas. */
+function assertAtlasUriNotDeprecatedDirectHosts(uri: string): void {
+	const looksLikeAtlasShards =
+		/^mongodb:\/\//i.test(uri) &&
+		/@[^/]*shard-00-\d{2}\.[^/]+\.mongodb\.net/i.test(uri);
+	if (looksLikeAtlasShards) {
+		throw new Error(
+			'MONGODB_URI uses the old multi-host mongodb://…shard-00-00… form. Replace it with mongodb+srv:// from Atlas → Connect → Drivers (Node.js). See schema.mongodb.md.'
+		);
 	}
-	return {
-		host: readEnv('MYSQL_HOST')!,
-		port: Number(readEnv('MYSQL_PORT') || 3306),
-		user: readEnv('MYSQL_USER')!,
-		password: readEnv('MYSQL_PASSWORD') ?? '',
-		database: readEnv('MYSQL_DATABASE')!,
-		waitForConnections: true,
-		connectionLimit: 10,
-		dateStrings: true
-	};
 }
 
-export function getPool(): mysql.Pool | null {
+async function ensureIndexes(database: Db): Promise<void> {
+	await database.collection('bookings').createIndex({ object_id: 1, date: 1 });
+}
+
+/**
+ * Shared MongoDB database handle (Atlas or local).
+ * Set `MONGODB_URI` and optional `MONGODB_DB` (default `booking`).
+ */
+export async function getDb(): Promise<Db | null> {
 	if (!isDatabaseConfigured()) return null;
-	pool ??= mysql.createPool(poolOptions());
-	return pool;
+	if (dbInstance) return dbInstance;
+	if (!connecting) {
+		connecting = (async () => {
+			const uri = readEnv('MONGODB_URI')!;
+			assertAtlasUriNotDeprecatedDirectHosts(uri);
+			const dbName = readEnv('MONGODB_DB') ?? 'booking';
+			const c = new MongoClient(uri, {
+				serverSelectionTimeoutMS: 25000,
+				/** Prefer IPv4 — helps some Windows / DNS setups connecting to Atlas. */
+				family: 4
+			});
+			await c.connect();
+			client = c;
+			dbInstance = c.db(dbName);
+			await ensureIndexes(dbInstance);
+			return dbInstance;
+		})().catch((e) => {
+			connecting = null;
+			dbInstance = undefined;
+			client = undefined;
+			throw e;
+		});
+	}
+	return connecting;
 }
