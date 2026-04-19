@@ -49,4 +49,10 @@ npm run build
 
 You can preview the production build with `npm run preview`.
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+### Deploying on Vercel
+
+The project uses [`@sveltejs/adapter-vercel`](https://svelte.dev/docs/kit/adapter-vercel). Import the repo in Vercel, use the **SvelteKit** framework preset (or defaults), and **do not** set **Output Directory** to `public` — the adapter produces the layout Vercel expects.
+
+Add **`MONGODB_URI`**, **`MONGODB_DB`**, and any **Swish** / cert env vars in the Vercel project **Settings → Environment Variables**. For Swish TLS files on serverless, prefer **`SWISH_CLIENT_*_PATH`** pointing at paths that exist in the deployment, or extend the app to read PEM contents from env (bundled `client_cert/` may not be present unless committed).
+
+For other hosts (Docker, VPS, Railway), switch to [`@sveltejs/adapter-node`](https://svelte.dev/docs/kit/adapter-node) in `svelte.config.js` if you need a single long-running Node process.
