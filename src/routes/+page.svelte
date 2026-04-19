@@ -9,6 +9,19 @@
 </svelte:head>
 
 <div class="page">
+	<!-- Byt fil till `static/images/tjanster-hero.gif` och uppdatera src om du vill använda animerad GIF. -->
+	<section class="hero" aria-label="Tjänster">
+		<img
+			class="hero-img"
+			src="/images/tjanster-hero.png"
+			alt="Tjänster: träningar för ekipage och grupper, kontakt vid intresse. Aktuellt utbud för hästar som visas nedan."
+			width="1200"
+			height="675"
+			loading="eager"
+			decoding="async"
+		/>
+	</section>
+
 	<h1 class="page-title">Välj utförare</h1>
 
 	{#if !data.configured}
@@ -52,6 +65,20 @@
 			sans-serif;
 		background: #f6f6f6;
 		color: #1a1a1a;
+	}
+	.hero {
+		max-width: 960px;
+		margin: 0 auto 1.25rem;
+		border-radius: 12px;
+		overflow: hidden;
+		box-shadow: 0 4px 24px rgb(0 0 0 / 10%);
+		line-height: 0;
+	}
+	.hero-img {
+		display: block;
+		width: 100%;
+		height: auto;
+		vertical-align: middle;
 	}
 	.page-title {
 		text-align: center;
