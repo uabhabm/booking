@@ -100,6 +100,7 @@
 		);
 	});
 
+	/** På mobil: öppna Swish direkt via `swish://paymentrequest` (deep link / automatisk växling till appen). */
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		if (!successQrDataUrl || !swishCheckout?.paymentRequestToken || !swishCheckout?.callbackUrl) {
@@ -113,10 +114,14 @@
 			swishCheckout.paymentRequestToken,
 			swishCheckout.callbackUrl
 		);
-		const t = window.setTimeout(() => {
-			window.location.href = url;
-		}, 250);
-		return () => window.clearTimeout(t);
+		let cancelled = false;
+		queueMicrotask(() => {
+			if (cancelled) return;
+			window.location.replace(url);
+		});
+		return () => {
+			cancelled = true;
+		};
 	});
 </script>
 
@@ -173,7 +178,8 @@
 								{#if payerDevice === 'phone'}
 									<div class="swish-phone-pay">
 										<p class="swish-phone-lead">
-											Öppnar Swish på den här telefonen. Om inget händer, tryck på knappen.
+											Startar Swish på samma telefon via djup-länk. Om appen inte öppnas, tryck på
+											knappen nedan.
 										</p>
 										<a class="btn swish-open-app" href={swishDeepLink}>Öppna Swish och betala</a>
 										<details class="swish-phone-fallback">

@@ -20,8 +20,28 @@ function truncateForLog(text: string, max = 4000): string {
 	return `${text.slice(0, max)}… (${text.length} chars total)`;
 }
 
-/** Default payee for MSS test merchant cert `Swish_Merchant_TestCertificate_1234679304`. Override with `SWISH_PAYEE_ALIAS`. */
-export const SWISH_PAYEE_ALIAS = '1234679304';
+/**
+ * Normalizes Swish `payeeAlias` to 10-digit Swedish format (e.g. 0046768593696 / +46 → 0768593696).
+ * Override with `SWISH_PAYEE_ALIAS` in `.env` if you use another number.
+ */
+export function normalizeSwishPayeeAlias(raw: string): string {
+	const d = raw.replace(/\D/g, '');
+	if (d.length === 0) return raw.trim();
+	let x = d;
+	if (x.startsWith('00')) {
+		x = x.slice(2);
+	}
+	if (x.startsWith('46') && x.length === 11) {
+		return `0${x.slice(2)}`;
+	}
+	if (x.length === 10 && x.startsWith('0')) {
+		return x;
+	}
+	return x;
+}
+
+/** Default mottagare: 0046768593696 → 0768593696 (samma som skickas till MSS). */
+export const SWISH_PAYEE_ALIAS = normalizeSwishPayeeAlias('0046768593696');
 
 const DEFAULT_PAYMENT_REQUESTS_URL =
 	'https://mss.cpc.getswish.net/swish-cpcapi/api/v1/paymentrequests/';
@@ -36,7 +56,8 @@ function readEnv(key: string): string | undefined {
 
 /** Payee number shown in checkout (same as sent to MSS). */
 export function getConfiguredSwishPayeeAlias(): string {
-	return readEnv('SWISH_PAYEE_ALIAS') ?? SWISH_PAYEE_ALIAS;
+	const v = readEnv('SWISH_PAYEE_ALIAS');
+	return v ? normalizeSwishPayeeAlias(v) : SWISH_PAYEE_ALIAS;
 }
 
 /** Callback URL sent to MSS (also used in `swish://` deep link on phones). */
@@ -129,7 +150,7 @@ export async function createMssPaymentRequest(
 		return { ok: false, message: 'Ogiltigt belopp för Swish.' };
 	}
 
-	const payeeAlias = readEnv('SWISH_PAYEE_ALIAS') ?? SWISH_PAYEE_ALIAS;
+	const payeeAlias = getConfiguredSwishPayeeAlias();
 	const body = {
 		payeePaymentReference: input.payeePaymentReference.slice(0, 35),
 		callbackUrl,
