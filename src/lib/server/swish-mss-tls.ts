@@ -8,6 +8,12 @@ function readEnv(key: string): string | undefined {
 	return typeof v === 'string' && v.trim() ? v.trim() : undefined;
 }
 
+/** Raw value (no trim) for multiline PEM pasted in Vercel / CI. */
+function readEnvRaw(key: string): string | undefined {
+	const v = (env as Record<string, string | undefined>)[key];
+	return typeof v === 'string' ? v : undefined;
+}
+
 const certDir = () => join(process.cwd(), 'client_cert');
 
 /** Default filenames match Swish test bundle in `client_cert/`. */
@@ -17,12 +23,59 @@ const DEFAULT_CA = 'Swish_TLS_RootCA.pem';
 
 let cached: Agent | undefined | null;
 
+function pemStringToBuffer(label: string, raw: string): Buffer {
+	const normalized = raw.replace(/\r\n/g, '\n').replace(/\\n/g, '\n').trim();
+	if (!normalized) {
+		throw new Error(`empty ${label}`);
+	}
+	return Buffer.from(normalized, 'utf8');
+}
+
+function tryBuildAgentFromPemEnv(): Agent | null {
+	const certRaw = readEnvRaw('SWISH_CLIENT_CERT_PEM');
+	const keyRaw = readEnvRaw('SWISH_CLIENT_KEY_PEM');
+	const caRaw = readEnvRaw('SWISH_TLS_ROOT_CA_PEM');
+	const hasAny = Boolean(certRaw?.trim() || keyRaw?.trim() || caRaw?.trim());
+	if (!hasAny) return null;
+	if (!certRaw?.trim() || !keyRaw?.trim() || !caRaw?.trim()) {
+		console.error(
+			'[Swish MSS] TLS: set all of SWISH_CLIENT_CERT_PEM, SWISH_CLIENT_KEY_PEM, SWISH_TLS_ROOT_CA_PEM (or use *_PATH / client_cert/ instead).'
+		);
+		return null;
+	}
+	try {
+		const cert = pemStringToBuffer('SWISH_CLIENT_CERT_PEM', certRaw);
+		const key = pemStringToBuffer('SWISH_CLIENT_KEY_PEM', keyRaw);
+		const ca = pemStringToBuffer('SWISH_TLS_ROOT_CA_PEM', caRaw);
+		return new Agent({
+			connect: { cert, key, ca }
+		});
+	} catch (e) {
+		console.error('[Swish MSS] TLS: failed to parse PEM env', e);
+		return null;
+	}
+}
+
 /**
  * Undici `Agent` with client cert + Swish test CA for MSS/CPC (`mss.cpc.getswish.net`).
  * Cached for the process lifetime. Returns `null` if files are missing or unreadable.
+ *
+ * **Serverless (e.g. Vercel):** set `SWISH_CLIENT_CERT_PEM`, `SWISH_CLIENT_KEY_PEM`, and
+ * `SWISH_TLS_ROOT_CA_PEM` to the full PEM text (multiline in the dashboard, or one line with `\n` escapes).
  */
 export function getSwishMssTlsAgent(): Agent | null {
 	if (cached !== undefined) return cached;
+
+	const fromPem = tryBuildAgentFromPemEnv();
+	if (fromPem) {
+		cached = fromPem;
+		console.log('[Swish MSS] TLS: client certificate agent ready (from SWISH_*_PEM env)');
+		return cached;
+	}
+	if (readEnvRaw('SWISH_CLIENT_CERT_PEM') || readEnvRaw('SWISH_CLIENT_KEY_PEM') || readEnvRaw('SWISH_TLS_ROOT_CA_PEM')) {
+		cached = null;
+		return null;
+	}
 
 	const certPath = readEnv('SWISH_CLIENT_CERT_PATH') ?? join(certDir(), DEFAULT_CERT);
 	const keyPath = readEnv('SWISH_CLIENT_KEY_PATH') ?? join(certDir(), DEFAULT_KEY);

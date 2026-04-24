@@ -170,7 +170,7 @@ export async function createMssPaymentRequest(
 		return {
 			ok: false,
 			message:
-				'Saknar Swish MSS TLS: lägg filer i client_cert/ (Swish_Merchant_TestCertificate_1234679304.pem, .key, Swish_TLS_RootCA.pem) eller sätt SWISH_CLIENT_CERT_PATH, SWISH_CLIENT_KEY_PATH och SWISH_TLS_ROOT_CA_PATH.'
+				'Saknar Swish MSS TLS: lägg filer i client_cert/ eller sätt SWISH_CLIENT_CERT_PATH, SWISH_CLIENT_KEY_PATH, SWISH_TLS_ROOT_CA_PATH. På Vercel/serverless: sätt SWISH_CLIENT_CERT_PEM, SWISH_CLIENT_KEY_PEM och SWISH_TLS_ROOT_CA_PEM (hela PEM-innehållet).'
 		};
 	}
 
