@@ -1,5 +1,7 @@
+import { createPrivateKey, X509Certificate } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import process from 'node:process';
 import { Agent } from 'undici';
 import { env } from '$env/dynamic/private';
 
@@ -8,8 +10,12 @@ function readEnv(key: string): string | undefined {
 	return typeof v === 'string' && v.trim() ? v.trim() : undefined;
 }
 
-/** Raw value (no trim) for multiline PEM pasted in Vercel / CI. */
-function readEnvRaw(key: string): string | undefined {
+/** Prefer `process.env` for PEM bodies so Vercel-injected secrets match what Node TLS reads at handshake. */
+function readPemEnvRaw(key: string): string | undefined {
+	const fromProcess = process.env[key];
+	if (typeof fromProcess === 'string' && fromProcess.length > 0) {
+		return fromProcess;
+	}
 	const v = (env as Record<string, string | undefined>)[key];
 	return typeof v === 'string' ? v : undefined;
 }
@@ -27,12 +33,17 @@ function hasPemBegin(s: string): boolean {
 	return /-----BEGIN [A-Z0-9 -]+-----/.test(s);
 }
 
+/** Word / Google Docs sometimes turn hyphens in BEGIN lines into Unicode dashes; OpenSSL rejects those. */
+function normalizePemAsciiDashes(s: string): string {
+	return s.replace(/\u2013/g, '-').replace(/\u2014/g, '-').replace(/\u2212/g, '-');
+}
+
 /**
- * Turns a Vercel/CI env string into a PEM `Buffer` Node TLS accepts.
- * Handles: UTF-8 BOM, `\r`, literal `\n` escapes, outer quotes, and **whole-value base64**
- * (common when pasting PEM into a single-line env without real newlines).
+ * Turns a Vercel/CI env string into PEM text Node TLS accepts.
+ * Handles: UTF-8 BOM, `\r`, literal `\n` escapes, outer quotes, Unicode dashes in markers, and
+ * **whole-value base64** (single-line env encoding of a full PEM file).
  */
-function decodePemEnvValue(label: string, raw: string): Buffer {
+function decodePemEnvValue(label: string, raw: string): string {
 	let s = raw.replace(/^\uFEFF/, '');
 	s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	for (let i = 0; i < 8 && s.includes('\\n'); i++) {
@@ -49,11 +60,11 @@ function decodePemEnvValue(label: string, raw: string): Buffer {
 		throw new Error(`${label}: empty after normalizing`);
 	}
 
-	let text = s;
+	let text = normalizePemAsciiDashes(s);
 	if (!hasPemBegin(text)) {
 		const b64 = text.replace(/\s/g, '');
 		try {
-			const dec = Buffer.from(b64, 'base64').toString('utf8');
+			const dec = normalizePemAsciiDashes(Buffer.from(b64, 'base64').toString('utf8'));
 			if (hasPemBegin(dec)) {
 				text = dec.trim();
 			}
@@ -69,13 +80,34 @@ function decodePemEnvValue(label: string, raw: string): Buffer {
 		);
 	}
 
-	return Buffer.from(text, 'utf8');
+	return text;
+}
+
+function assertParsableTlsMaterials(certPem: string, keyPem: string, caPem: string): void {
+	try {
+		new X509Certificate(certPem);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		throw new Error(`SWISH_CLIENT_CERT_PEM is not a valid X.509 certificate PEM: ${msg}`);
+	}
+	try {
+		createPrivateKey({ key: keyPem, format: 'pem' });
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		throw new Error(`SWISH_CLIENT_KEY_PEM is not a valid private key PEM: ${msg}`);
+	}
+	try {
+		new X509Certificate(caPem);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		throw new Error(`SWISH_TLS_ROOT_CA_PEM is not a valid X.509 certificate PEM: ${msg}`);
+	}
 }
 
 function tryBuildAgentFromPemEnv(): Agent | null {
-	const certRaw = readEnvRaw('SWISH_CLIENT_CERT_PEM');
-	const keyRaw = readEnvRaw('SWISH_CLIENT_KEY_PEM');
-	const caRaw = readEnvRaw('SWISH_TLS_ROOT_CA_PEM');
+	const certRaw = readPemEnvRaw('SWISH_CLIENT_CERT_PEM');
+	const keyRaw = readPemEnvRaw('SWISH_CLIENT_KEY_PEM');
+	const caRaw = readPemEnvRaw('SWISH_TLS_ROOT_CA_PEM');
 	const hasAny = Boolean(certRaw?.trim() || keyRaw?.trim() || caRaw?.trim());
 	if (!hasAny) return null;
 	if (!certRaw?.trim() || !keyRaw?.trim() || !caRaw?.trim()) {
@@ -85,11 +117,13 @@ function tryBuildAgentFromPemEnv(): Agent | null {
 		return null;
 	}
 	try {
-		const cert = decodePemEnvValue('SWISH_CLIENT_CERT_PEM', certRaw);
-		const key = decodePemEnvValue('SWISH_CLIENT_KEY_PEM', keyRaw);
-		const ca = decodePemEnvValue('SWISH_TLS_ROOT_CA_PEM', caRaw);
+		const certPem = decodePemEnvValue('SWISH_CLIENT_CERT_PEM', certRaw);
+		const keyPem = decodePemEnvValue('SWISH_CLIENT_KEY_PEM', keyRaw);
+		const caPem = decodePemEnvValue('SWISH_TLS_ROOT_CA_PEM', caRaw);
+		assertParsableTlsMaterials(certPem, keyPem, caPem);
+		/** Pass strings (UTF-8 PEM); avoids any Buffer serialization edge cases in the TLS stack. */
 		return new Agent({
-			connect: { cert, key, ca }
+			connect: { cert: certPem, key: keyPem, ca: caPem }
 		});
 	} catch (e) {
 		console.error('[Swish MSS] TLS: failed to parse PEM env', e);
@@ -113,7 +147,11 @@ export function getSwishMssTlsAgent(): Agent | null {
 		console.log('[Swish MSS] TLS: client certificate agent ready (from SWISH_*_PEM env)');
 		return cached;
 	}
-	if (readEnvRaw('SWISH_CLIENT_CERT_PEM') || readEnvRaw('SWISH_CLIENT_KEY_PEM') || readEnvRaw('SWISH_TLS_ROOT_CA_PEM')) {
+	if (
+		readPemEnvRaw('SWISH_CLIENT_CERT_PEM') ||
+		readPemEnvRaw('SWISH_CLIENT_KEY_PEM') ||
+		readPemEnvRaw('SWISH_TLS_ROOT_CA_PEM')
+	) {
 		cached = null;
 		return null;
 	}
