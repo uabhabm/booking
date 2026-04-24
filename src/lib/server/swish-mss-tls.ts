@@ -23,12 +23,53 @@ const DEFAULT_CA = 'Swish_TLS_RootCA.pem';
 
 let cached: Agent | undefined | null;
 
-function pemStringToBuffer(label: string, raw: string): Buffer {
-	const normalized = raw.replace(/\r\n/g, '\n').replace(/\\n/g, '\n').trim();
-	if (!normalized) {
-		throw new Error(`empty ${label}`);
+function hasPemBegin(s: string): boolean {
+	return /-----BEGIN [A-Z0-9 -]+-----/.test(s);
+}
+
+/**
+ * Turns a Vercel/CI env string into a PEM `Buffer` Node TLS accepts.
+ * Handles: UTF-8 BOM, `\r`, literal `\n` escapes, outer quotes, and **whole-value base64**
+ * (common when pasting PEM into a single-line env without real newlines).
+ */
+function decodePemEnvValue(label: string, raw: string): Buffer {
+	let s = raw.replace(/^\uFEFF/, '');
+	s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+	for (let i = 0; i < 8 && s.includes('\\n'); i++) {
+		s = s.replace(/\\n/g, '\n');
 	}
-	return Buffer.from(normalized, 'utf8');
+	s = s.trim();
+	if (
+		(s.startsWith('"') && s.endsWith('"')) ||
+		(s.startsWith("'") && s.endsWith("'"))
+	) {
+		s = s.slice(1, -1).trim();
+	}
+	if (!s) {
+		throw new Error(`${label}: empty after normalizing`);
+	}
+
+	let text = s;
+	if (!hasPemBegin(text)) {
+		const b64 = text.replace(/\s/g, '');
+		try {
+			const dec = Buffer.from(b64, 'base64').toString('utf8');
+			if (hasPemBegin(dec)) {
+				text = dec.trim();
+			}
+		} catch {
+			/* not valid base64 */
+		}
+	}
+
+	if (!hasPemBegin(text)) {
+		throw new Error(
+			`${label}: must contain a PEM header (-----BEGIN ...-----). If you pasted one long line, ` +
+				`either use real line breaks in Vercel or paste the **base64 encoding of the entire PEM file** as the value.`
+		);
+	}
+
+	return Buffer.from(text, 'utf8');
 }
 
 function tryBuildAgentFromPemEnv(): Agent | null {
@@ -44,9 +85,9 @@ function tryBuildAgentFromPemEnv(): Agent | null {
 		return null;
 	}
 	try {
-		const cert = pemStringToBuffer('SWISH_CLIENT_CERT_PEM', certRaw);
-		const key = pemStringToBuffer('SWISH_CLIENT_KEY_PEM', keyRaw);
-		const ca = pemStringToBuffer('SWISH_TLS_ROOT_CA_PEM', caRaw);
+		const cert = decodePemEnvValue('SWISH_CLIENT_CERT_PEM', certRaw);
+		const key = decodePemEnvValue('SWISH_CLIENT_KEY_PEM', keyRaw);
+		const ca = decodePemEnvValue('SWISH_TLS_ROOT_CA_PEM', caRaw);
 		return new Agent({
 			connect: { cert, key, ca }
 		});
